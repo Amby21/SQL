@@ -25,3 +25,12 @@ FROM orders o
 LEFT JOIN customers c
 ON o.cust_id = c.id
 WHERE o.amount >= 30;
+
+--ORDERS FOR WHICH CUSTOMER DOESNT EXIST
+
+SELECT o.order_id
+FROM orders o
+LEFT JOIN customers c
+ON o.cust_id = c.id
+WHERE c.id IS NULL AND o.cust_id IS NOT NULL;
+
