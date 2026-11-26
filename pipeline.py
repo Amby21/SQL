@@ -4,7 +4,6 @@ from contextlib import closing
 from datetime import datetime
 
 # closing() guarantees conn.close() even if something below raises,
-# and `with conn:` commits on success / rolls back on error.
 with closing(sqlite3.connect("shop.db", timeout=10)) as conn:
     with conn:
         cur = conn.cursor()
@@ -32,8 +31,33 @@ with closing(sqlite3.connect("shop.db", timeout=10)) as conn:
         cur.executemany("INSERT OR REPLACE INTO leads_new VALUES (?,?,?,?,?)", to_insert)
 
         cur.execute('''SELECT id, COALESCE(country,'Unknown') AS country FROM leads_new;''')
-        cur.execute('''SELECT id, TRIM(LOWER(email)), COUNT(*) AS entries FROM leads_new GROUP BY TRIM(LOWER(email)) HAVING entries > 1; ''')
+        cur.execute(''' WITH cleaned AS (SELECT id, TRIM(LOWER(email)) AS email_clean, COUNT(*) OVER (PARTITION BY TRIM(LOWER(email))) AS dup_count FROM leads_new) SELECT id, email_clean, dup_count FROM cleaned WHERE dup_count > 1; ''')
+        cur.execute(''' WITH cleaned AS (SELECT id, TRIM(LOWER(email)) AS email_clean, ROW_NUMBER() OVER (PARTITION BY TRIM(LOWER(email)) ORDER BY signup_date ASC) AS rank_cust FROM leads_new) SELECT id, email_clean, rank_cust FROM cleaned WHERE rank_cust > 1; ''')
+        # Save the inserts first so the rollback below only undoes the DELETE.
+        conn.commit()
+
+        # REMOVING THE DUPLICATE (dry run)
+        # Python's sqlite3 opens a transaction automatically before the DELETE,
+        cur.execute('''
+            -- Step 1: number each row within its email group, oldest signup = 1
+            WITH ranked AS (
+            SELECT id, ROW_NUMBER() OVER ( PARTITION BY TRIM(LOWER(email)) ORDER BY signup_date id ASC ) AS rank_cust
+            FROM leads_new),
+            -- Step 2: keep only the extra copies (anything after the first)
+            duplicates AS (
+            SELECT id FROM ranked WHERE rank_cust > 1
+            )
+            -- Step 3: delete those ids
+            DELETE FROM leads_new 
+            WHERE id IN (SELECT id FROM duplicates)
+            RETURNING id, email
+        ''')
         for row in cur.fetchall():
-            print(row)
-    conn.commit()
-    conn.close()
+            print("would delete:", row)
+
+        # Undo the DELETE. Swap this for conn.commit() to actually remove duplicates.
+        conn.rollback()
+
+
+
+
